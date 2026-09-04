@@ -339,46 +339,6 @@ function renderVerification(live) {
     </div>`;
 }
 
-function renderSubnetOverview(subnet, metagraph) {
-  const validators = [...(metagraph ?? [])]
-    .filter((n) => n.validator_permit)
-    .sort((a, b) => Number(b.total_alpha_stake) - Number(a.total_alpha_stake))
-    .slice(0, 5);
-
-  document.getElementById('subnetOverview').innerHTML = `
-    <div class="panel">
-      <div class="panel-header"><h2>Subnet Overview</h2><span class="dim small">block ${fmtNum(
-        subnet?.block_number
-      )}</span></div>
-      <dl class="kv">
-        <dt>Miners</dt><dd>${fmtNum(subnet?.active_miners)}</dd>
-        <dt>Validators</dt><dd>${fmtNum(subnet?.active_validators)}</dd>
-        <dt>Network</dt><dd>Finney</dd>
-        <dt>Registered keys</dt><dd>${fmtNum(subnet?.active_keys)} / ${fmtNum(subnet?.max_neurons)}</dd>
-        <dt>Tempo</dt><dd>${fmtNum(subnet?.tempo)} blk</dd>
-        <dt>Reg. cost</dt><dd>${fmtRao(subnet?.neuron_registration_cost, 4)} τ</dd>
-      </dl>
-      <div class="section-title">Top Validators</div>
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead><tr><th>Rank</th><th>UID</th><th>Stake (α)</th><th>Trust</th></tr></thead>
-          <tbody>
-            ${validators
-              .map(
-                (v, i) => `<tr>
-                  <td>#${i + 1}</td>
-                  <td><strong>${esc(v.uid)}</strong></td>
-                  <td class="num">${fmtRao(v.total_alpha_stake, 0)}</td>
-                  <td class="num">${fmtFixed(v.validator_trust ?? v.trust, 3)}</td>
-                </tr>`
-              )
-              .join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>`;
-}
-
 function renderPipeline(live, liveBlock) {
   // epochProgress needs the CURRENT chain height, not the epoch's own start
   // block — passing the latter always yields elapsed=0, i.e. a permanent "0%
@@ -642,7 +602,6 @@ async function load() {
     renderRankings(metagraph, latest);
     renderPerformance(roundsHist);
     renderVerification(live);
-    renderSubnetOverview(subnet, metagraph);
     renderPipeline(live, subnet?.block_number);
     renderValidatorQueue(live);
     renderChainHealth(subnet, live);
