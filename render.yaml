@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: cascade-dashboard
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: TAOSTATS_API_KEY
+        sync: false
+      - key: SUBNET_NETUID
+        value: "91"

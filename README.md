@@ -25,6 +25,26 @@ The API key is only needed for the chain-side data (metagraph, registrations, st
 Round, scoring and verification pages read the **public** Cascade receipt store and work
 without any credentials.
 
+## Deploying
+
+This is a plain long-running Node server, not a static site — it needs a host that keeps a
+process alive, not a serverless one. The in-memory cache and the Taostats rate-limit queue
+(`src/cache.js`, `src/taostats.js`) both assume a single persistent process; Vercel and Netlify
+run short-lived serverless functions instead, which would let concurrent requests bypass the
+queue and start tripping Taostats' 429 limit again. **Render, Railway, or Fly.io** run
+`server.js` as-is with no code changes.
+
+**Render** (free tier, no CLI needed):
+1. Push this repo to GitHub if it isn't already.
+2. On [render.com](https://render.com), New → Blueprint, point it at the repo — it reads
+   `render.yaml` and creates the service automatically.
+3. When prompted, set `TAOSTATS_API_KEY` (the one field `render.yaml` deliberately leaves for
+   you to fill in on the dashboard rather than committing to git).
+4. Deploy. Render sets `PORT` itself; the app already reads `process.env.PORT`.
+
+Railway and Fly.io work the same way without a blueprint file: connect the repo, set
+`TAOSTATS_API_KEY` as an environment variable, and use `npm start` as the start command.
+
 ## Pages
 
 Four pages. The Overview is deliberately minimal — the detail lives one click away.
