@@ -180,8 +180,9 @@ function renderRankings(metagraph, latest) {
       </div>
       <div class="table-wrap">
         <table class="data-table">
-          <thead><tr><th>Rank</th><th>UID</th><th>Hotkey</th><th>Role</th><th>Incentive</th><th>Emission (α/day)</th><th>Stake (α)</th></tr></thead>
+          <thead><tr><th>Rank</th><th>UID</th><th>Hotkey</th><th>Role</th><th>Incentive</th><th>Emission (α/day)</th></tr></thead>
           <tbody>
+            ${!ranked.length ? '<tr><td colspan="6" class="empty">Chain data unavailable — miner rankings need the metagraph.</td></tr>' : ''}
             ${ranked
               .map((n, i) => {
                 const m = medal(i);
@@ -199,7 +200,6 @@ function renderRankings(metagraph, latest) {
                   }</td>
                   <td class="num">${fmtFixed(n.incentive, 4)}</td>
                   <td class="num">${fmtRao(n.daily_reward, 2)}</td>
-                  <td class="num">${fmtRao(n.total_alpha_stake, 1)}</td>
                 </tr>`;
               })
               .join('')}
@@ -296,11 +296,15 @@ function renderPerformance(roundsHist) {
 }
 
 function renderVerification(live) {
-  const subs = [...(live?.submissions ?? [])]
-    .sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9))
-    .slice(0, 5);
+  // This panel is built around the p(best) ring, so it must lead with entrants
+  // that actually have a score. Rejected submissions carry no rank or p(best);
+  // sorting on rank alone let them fill the panel with empty rings whenever the
+  // heat hasn't screened anything yet.
+  const scored = (live?.submissions ?? []).filter((s) => s.state !== 'rejected');
+  const subs = [...scored].sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9)).slice(0, 5);
   const heat = live?.heat;
   const current = heat?.is_current;
+  const rejectedOnly = (live?.submissions ?? []).length > 0 && scored.length === 0;
 
   document.getElementById('verifyList').innerHTML = `
     <div class="panel">
@@ -333,7 +337,13 @@ function renderVerification(live) {
                   </div>`
                 )
                 .join('')
-            : '<div class="verify-item"><div class="empty">No screening results published yet.</div></div>'
+            : `<div class="verify-item"><div class="empty">${
+                rejectedOnly
+                  ? `The heat has not screened any generator yet this round — all ${fmtNum(
+                      live?.submission_counts?.submitted
+                    )} submissions so far were filtered before screening.`
+                  : 'No screening results published yet.'
+              }</div></div>`
         }
       </div>
     </div>`;
