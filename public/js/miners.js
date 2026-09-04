@@ -8,6 +8,7 @@ import {
   fmtFixed,
   fmtPct,
   fmtRao,
+  fmtDuration,
   shortAddr,
   shortGenRef,
   barCell,
@@ -19,6 +20,8 @@ import { mountChain } from './sections/chain.js';
 mountChrome();
 
 let rows = [];
+/** Reference data the row renderers need but that isn't per-row. */
+let tableMeta = { refBlock: null, blockTimeS: 12, certified: null, receipts: null };
 
 /**
  * The chain knows uid → stake/incentive/emission; the round receipt knows
@@ -37,6 +40,12 @@ function buildRows(neurons, detail) {
     const h = heat.get(uid);
     const f = finals.get(uid);
     return {
+      // Only the final-phase duel is scored inside the validators' signed
+      // receipt. The heat block is explicitly excluded from the receipt's
+      // canonical_body (DEC-CA-0011: unsigned, single-writer, presentational),
+      // so heat CRPS/MASE are provisional trainer output, not certified values.
+      verified: f ? 'final' : h ? 'heat' : null,
+      commit_block: committed.get(uid)?.commit_block ?? null,
       uid,
       hotkey: n.hotkey?.ss58 ?? null,
       coldkey: n.coldkey?.ss58 ?? null,
@@ -63,6 +72,32 @@ function buildRows(neurons, detail) {
       mase_mean: summaries.get(uid)?.mase_mean ?? null,
     };
   });
+}
+
+/**
+ * Marks whether the scores on a row were certified by validators. `certified`
+ * counts how many of the round's validators signed off, so "verified 3/3" says
+ * three independent validators re-scored and agreed to publish it.
+ */
+function verifiedCell(r, certified, receipts) {
+  if (r.verified === 'final') {
+    const n = certified != null && receipts != null ? ` ${certified}/${receipts}` : '';
+    return `<span class="badge good" title="Scored in the final duel and published inside validator-signed receipts${
+      receipts ? ` — certified by ${certified} of ${receipts} validators` : ''
+    }">✓ verified${n}</span>`;
+  }
+  if (r.verified === 'heat') {
+    return `<span class="badge plain" title="Heat screening values come from the trainer's unsigned, single-writer heat mirror. They are excluded from the receipt's signed body, so no validator has certified them.">◷ unverified</span>`;
+  }
+  return '<span class="dim tiny">—</span>';
+}
+
+/** Submission time, derived from the on-chain commit block against a reference height. */
+function submittedCell(r, refBlock, blockTimeS) {
+  if (r.commit_block == null) return '<span class="dim tiny">—</span>';
+  const ago =
+    refBlock != null ? `<span class="dim tiny"> ~${fmtDuration(Math.max(0, (refBlock - r.commit_block) * blockTimeS))} ago</span>` : '';
+  return `<span class="num">${fmtNum(r.commit_block)}</span>${ago}`;
 }
 
 function stage(r) {
@@ -116,6 +151,7 @@ function render() {
 
   const maxIncentive = Math.max(...rows.map((r) => r.incentive), 1e-9);
   const maxPBest = Math.max(...rows.map((r) => r.p_best ?? 0), 1e-9);
+  const { refBlock, blockTimeS, certified, receipts } = tableMeta;
 
   document.getElementById('lbBody').innerHTML = list.length
     ? list
@@ -125,6 +161,7 @@ function render() {
             <td class="mono" title="${esc(r.hotkey ?? '')}">${esc(shortAddr(r.hotkey))}</td>
             <td>${stage(r)}</td>
             <td class="mono tiny" title="${esc(r.gen_ref ?? '')}">${esc(shortGenRef(r.gen_ref))}</td>
+            <td>${submittedCell(r, refBlock, blockTimeS)}</td>
             <td class="num">${r.heat_rank ?? '<span class="dim">—</span>'}</td>
             <td class="num">${fmtFixed(r.heat_crps, 6)}</td>
             <td class="num">${fmtFixed(r.heat_mase, 5)}</td>
@@ -133,6 +170,7 @@ function render() {
                 ? barCell(r.p_best, maxPBest, { label: fmtPct(r.p_best, 2), color: 'var(--series-3)' })
                 : '<span class="dim">—</span>'
             }</td>
+            <td>${verifiedCell(r, certified, receipts)}</td>
             <td>${
               r.weight > 0 ? `<span class="badge good">${fmtFixed(r.weight, 4)}</span>` : '<span class="dim">—</span>'
             }</td>
@@ -150,7 +188,7 @@ function render() {
           </tr>`
         )
         .join('')
-    : `<tr><td colspan="14" class="empty">No miners match these filters.</td></tr>`;
+    : `<tr><td colspan="16" class="empty">No miners match these filters.</td></tr>`;
 
   document.getElementById('lbCount').textContent = `${list.length} of ${rows.length}`;
 }
@@ -186,6 +224,15 @@ async function load() {
     }
 
     rows = buildRows(neurons, detail);
+
+    // Prefer the metagraph's own block height (freshest, already fetched) over
+    // the receipt index snapshot, which lags by however long ago it published.
+    tableMeta = {
+      refBlock: neurons[0]?.block_number ?? latestRes.value?.chain?.current_block ?? null,
+      blockTimeS: latestRes.value?.chain?.block_time_s ?? 12,
+      certified: round?.n_scored ?? null,
+      receipts: round?.n_receipts ?? null,
+    };
 
     const competing = rows.filter((r) => r.heat_rank != null).length;
     const rewarded = rows.filter((r) => r.weight > 0).length;
@@ -240,12 +287,15 @@ async function load() {
           }. <strong>CRPS</strong> and <strong>MASE</strong> are from the heat screen — lower is better.
           <strong>p(best)</strong> is the bootstrap probability that entrant was genuinely the field's best.
           <strong>Incentive</strong> and <strong>emission</strong> are the on-chain consequences.
+          <strong>Submitted</strong> is the block the generator was committed on-chain.
+          <strong>Verified</strong> separates scores validators actually certified in a signed receipt from
+          heat-screen values, which the trainer publishes unsigned and no validator attests to.
         </p>
         <div class="table-wrap scroll-cap">
           <table class="data-table">
             <thead><tr>
-              <th>UID</th><th>Hotkey</th><th>Stage</th><th>Generator</th>
-              <th>Heat rank</th><th>CRPS</th><th>MASE</th><th>p(best)</th>
+              <th>UID</th><th>Hotkey</th><th>Stage</th><th>Generator</th><th>Submitted</th>
+              <th>Heat rank</th><th>CRPS</th><th>MASE</th><th>p(best)</th><th>Verified</th>
               <th>Round weight</th><th>Incentive</th><th>Emission (α)</th><th>Daily (α)</th><th>Stake (α)</th><th>Status</th>
             </tr></thead>
             <tbody id="lbBody"></tbody>
