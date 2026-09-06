@@ -13,11 +13,13 @@ import {
   shortGenRef,
   barCell,
   showError,
+  checkCredits,
 } from './common.js';
 import { mountRewards } from './sections/rewards.js';
 import { mountChain } from './sections/chain.js';
 
 mountChrome();
+checkCredits();
 
 let rows = [];
 /** Reference data the row renderers need but that isn't per-row. */

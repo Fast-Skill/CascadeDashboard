@@ -458,7 +458,43 @@ export function setTopbarTitle(title) {
   if (h1) h1.textContent = title;
 }
 
+/**
+ * Chain data is metered by Taostats credits. When the balance hits zero every
+ * chain call fails, and a generic "Unavailable" badge leaves the cause a
+ * mystery — so name it, and say the round data is unaffected.
+ */
+export async function checkCredits() {
+  try {
+    const cfg = await fetchJSON('/api/config');
+    const el = document.getElementById('creditNotice');
+    if (!el) return;
+    if (cfg.credits?.blocked) {
+      el.hidden = false;
+      el.innerHTML = `<div class="notice"><span>⚠</span><div>
+        <strong>Taostats credits exhausted (${esc(cfg.credits.detail ?? 'balance empty')}).</strong>
+        Chain-backed panels — miner rankings, stake, emission and chain events — cannot load until the
+        balance is topped up at <a href="https://dash.taostats.io/billing" target="_blank" rel="noopener">dash.taostats.io/billing</a>.
+        Round, verification and submission data come from the public Cascade store and are unaffected.
+      </div></div>`;
+    } else if (!cfg.apiKeyConfigured) {
+      el.hidden = false;
+      el.innerHTML = `<div class="notice"><span>⚠</span><div>
+        <strong>No Taostats API key configured.</strong> Chain-backed panels stay empty until
+        <span class="mono">TAOSTATS_API_KEY</span> is set. Round and verification data are unaffected.
+      </div></div>`;
+    } else {
+      el.hidden = true;
+    }
+  } catch {
+    /* the notice is advisory; never block the page on it */
+  }
+}
+
 export function setStatus({ stale = [], missing = [] } = {}) {
+  // A page only learns *why* chain data is missing after its own calls have
+  // failed, so re-check the credit state whenever something came back missing.
+  if (missing.length) checkCredits();
+
   const el = document.getElementById('dataStatus');
   if (!el) return;
   if (missing.length) {

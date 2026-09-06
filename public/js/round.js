@@ -20,9 +20,11 @@ import {
   showError,
   ROLE_COLOR,
   setTopbarTitle,
+  checkCredits,
 } from './common.js';
 
 mountChrome({ active: '/rounds' });
+checkCredits();
 
 const roundId = new URLSearchParams(window.location.search).get('id');
 

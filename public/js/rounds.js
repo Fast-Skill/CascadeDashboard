@@ -13,10 +13,12 @@ import {
   fmtDateTime,
   divergingBar,
   showError,
+  checkCredits,
 } from './common.js';
 import { mountCurrentRound } from './sections/current-round.js';
 
 mountChrome();
+checkCredits();
 
 let all = [];
 let reigns = [];

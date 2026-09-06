@@ -24,12 +24,50 @@ function schedule(task) {
   return run;
 }
 
-async function apiFetch(url, attempt = 0) {
-  const res = await schedule(() => fetch(url, { headers: { Authorization: API_KEY ?? '' } }));
-  if (res.status === 429 && attempt < 2) {
-    await sleep(3000 * 2 ** attempt);
-    return apiFetch(url, attempt + 1);
+/**
+ * Taostats returns 429 for two completely different conditions: a transient
+ * per-second rate limit (retrying works) and an exhausted credit balance
+ * (retrying never works). Retrying the latter turned an 87ms rejection into
+ * 9-22s of backoff per request, which is why pages appeared to hang.
+ */
+export class OutOfCreditsError extends Error {
+  constructor(detail) {
+    super(`Taostats credits exhausted — ${detail}`);
+    this.name = 'OutOfCreditsError';
+    this.outOfCredits = true;
   }
+}
+
+const CREDIT_COOLDOWN_MS = 5 * 60 * 1000;
+let creditsExhaustedUntil = 0;
+let creditsDetail = '';
+
+export function creditStatus() {
+  const blocked = Date.now() < creditsExhaustedUntil;
+  return { blocked, detail: blocked ? creditsDetail : null, retryAt: blocked ? creditsExhaustedUntil : null };
+}
+
+async function apiFetch(url, attempt = 0) {
+  // Once the balance is empty every further call is guaranteed to fail, so stop
+  // spending latency (and the request budget) on them until the cooldown lapses.
+  if (Date.now() < creditsExhaustedUntil) throw new OutOfCreditsError(creditsDetail);
+
+  const res = await schedule(() => fetch(url, { headers: { Authorization: API_KEY ?? '' } }));
+
+  if (res.status === 429) {
+    const text = await res.text().catch(() => '');
+    if (/insufficient credits/i.test(text)) {
+      creditsExhaustedUntil = Date.now() + CREDIT_COOLDOWN_MS;
+      creditsDetail = (text.match(/remaining: \d+[^)]*/i)?.[0] ?? 'balance empty').trim();
+      throw new OutOfCreditsError(creditsDetail);
+    }
+    if (attempt < 2) {
+      await sleep(3000 * 2 ** attempt);
+      return apiFetch(url, attempt + 1);
+    }
+    throw new Error(`Taostats API 429: ${text.slice(0, 200)}`);
+  }
+
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`Taostats API ${res.status}: ${text.slice(0, 200)}`);

@@ -11,9 +11,11 @@ import {
   statusBadge,
   timeAgo,
   showError,
+  checkCredits,
 } from './common.js';
 
 mountChrome();
+checkCredits();
 
 const RECEIPTS_BASE = 'https://s3.hippius.com/cascade-manifests';
 

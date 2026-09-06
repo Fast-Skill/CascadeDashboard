@@ -3,7 +3,7 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { taostats } from './src/taostats.js';
+import { taostats, creditStatus } from './src/taostats.js';
 import { cascade } from './src/cascade.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -43,7 +43,7 @@ function wrap(handler) {
 }
 
 app.get('/api/config', (req, res) => {
-  res.json({ netuid: NETUID, apiKeyConfigured: taostats.hasKey() });
+  res.json({ netuid: NETUID, apiKeyConfigured: taostats.hasKey(), credits: creditStatus() });
 });
 
 // --- chain data (Taostats) ---

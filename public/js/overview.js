@@ -17,9 +17,11 @@ import {
   sparkline,
   ring,
   showError,
+  checkCredits,
 } from './common.js';
 
 mountChrome();
+checkCredits();
 
 const STATE_BADGE = {
   advanced: '<span class="badge good">✓ advanced</span>',
@@ -583,58 +585,84 @@ function renderSubmissionsTable(live) {
     </div>`;
 }
 
+/** Resolves to {ok, value} instead of rejecting, so one dead call can't sink the page. */
+const attempt = (url) =>
+  fetchJSON(url).then(
+    (value) => ({ ok: true, value }),
+    (error) => ({ ok: false, error })
+  );
+
+/**
+ * Sections paint as their own data arrives rather than after all seven calls
+ * settle. The Cascade receipt store answers in ~0.3s and costs nothing, while
+ * the chain calls are credit-metered and serialized — waiting for the slowest
+ * one before drawing anything is what made the page look frozen.
+ */
 async function load() {
-  try {
-    const [liveRes, latestRes, roundsRes, rewardsRes, subnetRes, mgRes, evRes] = await Promise.allSettled([
-      fetchJSON('/api/cascade/live'),
-      fetchJSON('/api/cascade/latest'),
-      fetchJSON('/api/cascade/rounds'),
-      fetchJSON('/api/rewards'),
-      fetchJSON('/api/subnet'),
-      fetchJSON('/api/metagraph'),
-      fetchJSON('/api/events'),
-    ]);
+  const pLive = attempt('/api/cascade/live');
+  const pLatest = attempt('/api/cascade/latest');
+  const pRounds = attempt('/api/cascade/rounds');
+  const pRewards = attempt('/api/rewards');
+  const pSubnet = attempt('/api/subnet');
+  const pMeta = attempt('/api/metagraph');
+  const pEvents = attempt('/api/events');
 
-    const live = liveRes.status === 'fulfilled' ? liveRes.value : null;
-    const latest = latestRes.status === 'fulfilled' ? latestRes.value : null;
-    const roundsHist = roundsRes.status === 'fulfilled' ? roundsRes.value : null;
-    const rewards = rewardsRes.status === 'fulfilled' ? rewardsRes.value : null;
-    const subnet = subnetRes.status === 'fulfilled' ? subnetRes.value.data : null;
-    const metagraph = mgRes.status === 'fulfilled' ? mgRes.value.data : [];
-    const events = evRes.status === 'fulfilled' ? evRes.value.events : [];
+  const val = (r) => (r.ok ? r.value : null);
 
-    if (!live && !latest) {
-      showError(document.getElementById('main'), new Error('no round data available'));
-      return;
-    }
-
-    renderKpis({ live, latest, rewards, subnet, metagraph, roundsHist });
-    renderRankings(metagraph, latest);
-    renderPerformance(roundsHist);
+  // --- free receipt-store data: paints first ---
+  pLive.then((r) => {
+    const live = val(r);
+    if (!live) return;
     renderVerification(live);
-    renderPipeline(live, subnet?.block_number);
     renderValidatorQueue(live);
-    renderChainHealth(subnet, live);
-    renderActivity(events);
     renderValidatorStatus(live);
     renderSubmissionsTable(live);
+  });
 
-    const stale = [
-      live?.stale && 'live status',
-      latest?.stale && 'rounds',
-      roundsRes.status === 'rejected' && 'round history',
-    ].filter(Boolean);
-    const missing = [
-      subnetRes.status === 'rejected' && 'subnet',
-      mgRes.status === 'rejected' && 'metagraph',
-      evRes.status === 'rejected' && 'events',
-    ].filter(Boolean);
+  pRounds.then((r) => val(r) && renderPerformance(val(r)));
 
-    setStatus({ stale, missing });
-    markUpdated();
-  } catch (err) {
-    showError(document.getElementById('main'), err);
+  Promise.all([pLive, pSubnet]).then(([lr, sr]) => {
+    const live = val(lr);
+    if (live) renderPipeline(live, val(sr)?.data?.block_number);
+  });
+
+  // --- chain-backed sections: paint whenever the chain answers ---
+  Promise.all([pSubnet, pLive]).then(([sr, lr]) => renderChainHealth(val(sr)?.data ?? null, val(lr)));
+  Promise.all([pMeta, pLatest]).then(([mr, lr]) => renderRankings(val(mr)?.data ?? [], val(lr)));
+  pEvents.then((r) => renderActivity(val(r)?.events ?? []));
+
+  // --- KPI row depends on nearly everything, so it lands last ---
+  const [lr, lar, rr, rwr, sr, mr, er] = await Promise.all([
+    pLive,
+    pLatest,
+    pRounds,
+    pRewards,
+    pSubnet,
+    pMeta,
+    pEvents,
+  ]);
+
+  const live = val(lr);
+  const latest = val(lar);
+  if (!live && !latest) {
+    showError(document.getElementById('main'), new Error('no round data available'));
+    return;
   }
+
+  renderKpis({
+    live,
+    latest,
+    rewards: val(rwr),
+    subnet: val(sr)?.data ?? null,
+    metagraph: val(mr)?.data ?? [],
+    roundsHist: val(rr),
+  });
+
+  const stale = [live?.stale && 'live status', latest?.stale && 'rounds', !rr.ok && 'round history'].filter(Boolean);
+  const missing = [!sr.ok && 'subnet', !mr.ok && 'metagraph', !er.ok && 'events'].filter(Boolean);
+
+  setStatus({ stale, missing });
+  markUpdated();
 }
 
 load();
