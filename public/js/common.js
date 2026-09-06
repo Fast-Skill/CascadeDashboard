@@ -342,8 +342,12 @@ async function refreshTopbarStats() {
     const [liveRes, subnetRes] = await Promise.allSettled([fetchJSON('/api/cascade/live'), fetchJSON('/api/subnet')]);
     const live = liveRes.status === 'fulfilled' ? liveRes.value : null;
     const subnet = subnetRes.status === 'fulfilled' ? subnetRes.value.data : null;
-    const online = subnetRes.status === 'fulfilled';
-    const block = subnet?.block_number ?? live?.epoch_start_block ?? null;
+    // Block height comes from the subnet's own free status doc; falling back to
+    // the metered chain call only if that is unavailable. "Online" now tracks
+    // that free source, so an exhausted Taostats balance no longer reads as the
+    // whole dashboard being offline.
+    const block = live?.chain?.current_block ?? subnet?.block_number ?? live?.epoch_start_block ?? null;
+    const online = liveRes.status === 'fulfilled';
     const stageLabel = live?.stages?.[live.stage_index]?.label ?? '—';
 
     if (pillsEl) {
@@ -351,10 +355,12 @@ async function refreshTopbarStats() {
         <div class="stat-pill"><div class="pill-label">Subnet</div><div class="pill-value accent">#${esc(
           subnet?.netuid ?? live?.netuid ?? 91
         )}</div></div>
-        <div class="stat-pill"><div class="pill-label">Network</div><div class="pill-value">Finney</div></div>
+        <div class="stat-pill"><div class="pill-label">Network</div><div class="pill-value">${esc(
+          live?.chain?.network ?? 'Finney'
+        )}</div></div>
         <div class="stat-pill"><div class="pill-label">Block</div><div class="pill-value">${fmtNum(block)}</div></div>
-        <div class="stat-pill"><div class="pill-label">Tempo</div><div class="pill-value">${fmtNum(
-          subnet?.tempo
+        <div class="stat-pill"><div class="pill-label">Round</div><div class="pill-value">${fmtNum(
+          live?.chain?.epoch_blocks ?? subnet?.tempo
         )} blk</div></div>
         <div class="stat-pill"><div class="pill-label">Stage</div><div class="pill-value good">${esc(
           stageLabel

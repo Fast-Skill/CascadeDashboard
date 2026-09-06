@@ -103,9 +103,19 @@ Every round is scored **independently by each validator**, so a round can be acc
 rejected by a third. The dashboard keeps all of them rather than collapsing to one, and flags any
 round where scored validators disagree.
 
-**Taostats** — chain state for SN91. Rate-limited at roughly **5 requests per 10 seconds**, so all
-outbound calls are serialized through a queue with a 2.5s gap, retried with backoff on a 429, and
-cached. Concurrent callers for the same resource share one request. If a refresh fails, the last
+**Taostats** — chain state for SN91, and the only metered dependency. The **free tier allows
+5 calls/minute and 10,000 calls/month**; every chain call spends one credit, and a 429 with
+`Insufficient credits` means the balance is empty (distinct from a rate limit, and never worth
+retrying — the client fails fast and shows a banner naming the cause).
+
+Cache lifetimes, not page refresh rate, govern spend: a reload inside a TTL is served from cache
+for free. Defaults are budgeted at ~12 calls/hour (~8,640/month), inside the free allowance:
+subnet every 10 min, metagraph every 20 min, chain events every 60 min. Tune via `TTL_*_MS` in
+`.env` if you move to a paid plan. For scale: the original 25-30s TTLs cost ~360 calls/hour, which
+burns the entire monthly free allowance in about 28 hours of a single open tab.
+
+All outbound calls are serialized through one queue with a 12s gap (the free tier's 5/min ceiling),
+and concurrent callers for the same resource share a single request. If a refresh fails, the last
 good copy is served and the header shows a `◷ Cached` badge naming the affected sources.
 
 Note: Taostats' generic `/extrinsic` and `/event` endpoints accept a `netuid` parameter but

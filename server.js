@@ -71,7 +71,18 @@ app.get('/api/rewards', wrap(async () => {
 
   const round = latest.status === 'fulfilled' ? latest.value.round : null;
   const neurons = mgRes.status === 'fulfilled' ? mgRes.value.data : [];
-  const price = priceRes.status === 'fulfilled' ? priceRes.value : null;
+
+  // Taostats prices alpha in both TAO and USD, but the subnet's own free status
+  // doc carries the TAO price — so τ figures survive an empty credit balance
+  // even though USD (which only Taostats provides) does not.
+  let price = priceRes.status === 'fulfilled' ? priceRes.value : null;
+  if (!price) {
+    const live = await cascade.liveStatus().catch(() => null);
+    const tao = live?.chain?.alpha_price_tao;
+    if (tao != null) {
+      price = { tao, usd: null, observed_at: live.chain.as_of, block_number: live.chain.current_block, stale: false };
+    }
+  }
   const byUid = new Map(neurons.map((n) => [n.uid, n]));
 
   // Amounts come from the chain, not from the weight fraction. If the metagraph

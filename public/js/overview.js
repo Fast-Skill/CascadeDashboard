@@ -623,7 +623,7 @@ async function load() {
 
   Promise.all([pLive, pSubnet]).then(([lr, sr]) => {
     const live = val(lr);
-    if (live) renderPipeline(live, val(sr)?.data?.block_number);
+    if (live) renderPipeline(live, live.chain?.current_block ?? val(sr)?.data?.block_number);
   });
 
   // --- chain-backed sections: paint whenever the chain answers ---

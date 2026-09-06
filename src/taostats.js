@@ -4,14 +4,43 @@ const BASE = 'https://api.taostats.io/api';
 const NETUID = Number(process.env.SUBNET_NETUID || 91);
 const API_KEY = process.env.TAOSTATS_API_KEY;
 
-// Measured ceiling is ~5 requests per 10s and a full refresh needs 5 calls, so
-// every outbound call is serialized through one queue with a wide gap.
-const MIN_REQUEST_GAP_MS = 2500;
+/**
+ * Budgeted for the Taostats FREE tier: 5 calls/minute, 10,000 calls/month.
+ *
+ * Block height, alpha price and this round's commits come free from the
+ * subnet's own status/chain.json, so Taostats is only needed for per-miner
+ * chain state. 10,000/month is ~13.9 calls/hour sustained, so cache lifetimes — not client
+ * poll intervals — are what actually govern spend: a page refresh inside a TTL
+ * is served from cache and costs nothing. The allocation below spends ~12/hr,
+ * weighted toward the data that visibly moves:
+ *
+ *   subnet (key counts, burn)       every 30 min  ->  2 /hr
+ *   metagraph (ranks, stake)       every 20 min  ->  3 /hr
+ *   chain events (3 endpoints)     every 60 min  ->  3 /hr
+ *                                                  = 8 /hr
+ *
+ * Raise these if you upgrade the plan; lower them only with the monthly budget in mind.
+ */
+const TTL = {
+  subnet: Number(process.env.TTL_SUBNET_MS ?? 30 * 60_000),
+  metagraph: Number(process.env.TTL_METAGRAPH_MS ?? 20 * 60_000),
+  events: Number(process.env.TTL_EVENTS_MS ?? 60 * 60_000),
+};
+
+// 5 calls/minute means one call per 12s; the old 2.5s gap paced at 24/min and
+// tripped the per-minute limit on a single cold page load.
+const MIN_REQUEST_GAP_MS = Number(process.env.TAOSTATS_MIN_GAP_MS ?? 12_000);
 let queueTail = Promise.resolve();
 let lastRequestAt = 0;
 
 function schedule(task) {
   const run = queueTail.then(async () => {
+    // Re-check on reaching the front of the queue, not just on entering it. A
+    // page fires ~5 calls at once, so they all queue before the first failure
+    // registers; without this they would each still sit out a full gap for a
+    // request that is now guaranteed to fail.
+    if (Date.now() < creditsExhaustedUntil) throw new OutOfCreditsError(creditsDetail);
+
     const wait = Math.max(0, lastRequestAt + MIN_REQUEST_GAP_MS - Date.now());
     if (wait > 0) await sleep(wait);
     lastRequestAt = Date.now();
@@ -52,27 +81,38 @@ async function apiFetch(url, attempt = 0) {
   // spending latency (and the request budget) on them until the cooldown lapses.
   if (Date.now() < creditsExhaustedUntil) throw new OutOfCreditsError(creditsDetail);
 
-  const res = await schedule(() => fetch(url, { headers: { Authorization: API_KEY ?? '' } }));
+  // The response body must be inspected INSIDE the queued task. A 429 is a
+  // *resolved* fetch, so reading it afterwards let the queue release the next
+  // call before the exhaustion was recorded — and that call then sat out a full
+  // inter-request gap for a request already doomed to fail.
+  const outcome = await schedule(async () => {
+    const res = await fetch(url, { headers: { Authorization: API_KEY ?? '' } });
 
-  if (res.status === 429) {
-    const text = await res.text().catch(() => '');
-    if (/insufficient credits/i.test(text)) {
-      creditsExhaustedUntil = Date.now() + CREDIT_COOLDOWN_MS;
-      creditsDetail = (text.match(/remaining: \d+[^)]*/i)?.[0] ?? 'balance empty').trim();
-      throw new OutOfCreditsError(creditsDetail);
+    if (res.status === 429) {
+      const text = await res.text().catch(() => '');
+      if (/insufficient credits/i.test(text)) {
+        creditsExhaustedUntil = Date.now() + CREDIT_COOLDOWN_MS;
+        creditsDetail = (text.match(/remaining: \d+[^)]*/i)?.[0] ?? 'balance empty').trim();
+        throw new OutOfCreditsError(creditsDetail);
+      }
+      return { rateLimited: true, text };
     }
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Taostats API ${res.status}: ${text.slice(0, 200)}`);
+    }
+    return { json: await res.json() };
+  });
+
+  if (outcome.rateLimited) {
     if (attempt < 2) {
       await sleep(3000 * 2 ** attempt);
       return apiFetch(url, attempt + 1);
     }
-    throw new Error(`Taostats API 429: ${text.slice(0, 200)}`);
+    throw new Error(`Taostats API 429: ${outcome.text.slice(0, 200)}`);
   }
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Taostats API ${res.status}: ${text.slice(0, 200)}`);
-  }
-  return res.json();
+  return outcome.json;
 }
 
 const cached = createCache();
@@ -83,13 +123,13 @@ function requireKey() {
 
 async function subnet() {
   requireKey();
-  const r = await cached('subnet', 30_000, () => apiFetch(`${BASE}/subnet/latest/v1?netuid=${NETUID}`));
+  const r = await cached('subnet', TTL.subnet, () => apiFetch(`${BASE}/subnet/latest/v1?netuid=${NETUID}`));
   return { data: r.data.data?.[0] ?? null, stale: r.stale, fetchedAt: r.fetchedAt };
 }
 
 async function metagraph() {
   requireKey();
-  const r = await cached('metagraph', 30_000, () =>
+  const r = await cached('metagraph', TTL.metagraph, () =>
     apiFetch(`${BASE}/metagraph/latest/v1?netuid=${NETUID}&limit=1024&order=emission_desc`)
   );
   return { data: r.data.data ?? [], stale: r.stale, fetchedAt: r.fetchedAt };
@@ -99,7 +139,7 @@ async function metagraph() {
 // /event endpoints silently ignore netuid — the latest rows network-wide are
 // dominated by other subnets and almost never contain SN91 — so they are unusable here.
 async function registrations() {
-  const r = await cached('registrations', 25_000, () =>
+  const r = await cached('registrations', TTL.events, () =>
     apiFetch(`${BASE}/subnet/neuron/registration/v1?netuid=${NETUID}&limit=50&order=block_number_desc`)
   );
   const events = (r.data.data ?? []).map((x) => ({
@@ -118,7 +158,7 @@ async function registrations() {
 }
 
 async function deregistrations() {
-  const r = await cached('deregistrations', 25_000, () =>
+  const r = await cached('deregistrations', TTL.events, () =>
     apiFetch(`${BASE}/subnet/neuron/deregistration/v1?netuid=${NETUID}&limit=50&order=block_number_desc`)
   );
   const events = (r.data.data ?? []).map((x) => ({
@@ -139,7 +179,7 @@ async function deregistrations() {
 }
 
 async function stakeEvents() {
-  const r = await cached('delegation', 25_000, () =>
+  const r = await cached('delegation', TTL.events, () =>
     apiFetch(`${BASE}/delegation/v1?netuid=${NETUID}&limit=100&order=block_number_desc`)
   );
   const events = (r.data.data ?? []).map((x) => ({

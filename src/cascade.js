@@ -343,14 +343,20 @@ export const STAGES = [
  * otherwise a dashboard shows last round's ranking as this round's.
  */
 async function liveStatus() {
-  const [statusRes, heatRes, idx] = await Promise.allSettled([
+  // status/chain.json is what the subnet's own dashboard runs on. It is free and
+  // unmetered, and carries the live block height, the alpha price and this
+  // round's on-chain commits — all of which we were otherwise buying from
+  // Taostats one credit at a time.
+  const [statusRes, heatRes, chainRes, idx] = await Promise.allSettled([
     cached('status:round', 20_000, () => getJSON(`${RECEIPTS_BASE}/status/round.json`)),
     cached('status:heat', 30_000, () => getJSON(`${RECEIPTS_BASE}/status/heat.json`)),
+    cached('status:chain', 20_000, () => getJSON(`${RECEIPTS_BASE}/status/chain.json`)),
     roundIndex(),
   ]);
 
   const status = statusRes.status === 'fulfilled' ? statusRes.value.data : null;
   const heatDoc = heatRes.status === 'fulfilled' ? heatRes.value.data : null;
+  const chainDoc = chainRes.status === 'fulfilled' ? chainRes.value.data : null;
   const index = idx.status === 'fulfilled' ? idx.value : null;
 
   const epoch = status?.epoch_start_block ?? null;
@@ -411,7 +417,32 @@ async function liveStatus() {
 
   const rejectedTotal = Number(skipped?.total ?? 0);
 
+  // Commits for the round actually in flight. The heat mirror only publishes
+  // once a screen settles, so before that these are the only per-miner facts
+  // that belong to the current round rather than the previous one.
+  const committedNow = (chainDoc?.submissions ?? []).map((s) => ({
+    uid: s.uid,
+    hotkey: s.hotkey,
+    gen_ref: s.gen_ref,
+    commit_block: s.commit_block,
+  }));
+
   return {
+    chain: chainDoc
+      ? {
+          current_block: chainDoc.current_block ?? null,
+          block_time_s: chainDoc.block_time_s ?? 12,
+          epoch_blocks: chainDoc.epoch_blocks ?? 3600,
+          epoch_start_block: chainDoc.epoch_start_block ?? null,
+          network: chainDoc.network ?? null,
+          alpha_price_tao: chainDoc.economics?.alpha_price_tao ?? null,
+          tao_emission_per_day: chainDoc.economics?.tao_in_emission_per_day ?? null,
+          stage_windows: chainDoc.stage_windows ?? null,
+          as_of: chainDoc.as_of ?? null,
+        }
+      : null,
+    committed_now: committedNow,
+    committed_now_count: committedNow.length,
     submissions,
     submission_counts: {
       // The published doc truncates the rejected list, so the total and the
