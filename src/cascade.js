@@ -490,4 +490,70 @@ async function liveStatus() {
   };
 }
 
-export const cascade = { roundIndex, latestRound, roundDetail, liveStatus };
+/**
+ * Public-benchmark scores. Separate from the round's own scoring: these run the
+ * trained models against third-party suites (GIFT-Eval, BOOM, "time"), so they
+ * answer whether the subnet is producing a model that is good in absolute terms
+ * — not just better than the incumbent king.
+ *
+ * `reference-*` is the official Datadog Toto-2 at that preset, `genesis-*` is
+ * where the subnet started. Together they turn a raw score into a progress
+ * fraction. Only the 4m preset is published today; the rest return 403.
+ */
+const BENCH_KEYS = ['gifteval_crps', 'gifteval_mase', 'boom_crps', 'boom_mase', 'time_crps', 'time_mase'];
+
+function benchGeomean(scores) {
+  const vals = BENCH_KEYS.map((k) => scores?.[k]).filter((v) => typeof v === 'number' && v > 0);
+  if (vals.length !== BENCH_KEYS.length) return null;
+  return Math.exp(vals.reduce((a, v) => a + Math.log(v), 0) / vals.length);
+}
+
+async function benchmarks(roundId, preset = 'toto2-4m') {
+  const base = `${RECEIPTS_BASE}/benchmarks`;
+  const [roundRes, refRes, genRes] = await Promise.allSettled([
+    cached(`bench:round:${roundId}`, 6 * 60 * 60 * 1000, () => getJSON(`${base}/round-${roundId}.json`)),
+    cached(`bench:ref:${preset}`, 24 * 60 * 60 * 1000, () => getJSON(`${base}/reference-${preset}.json`)),
+    cached(`bench:gen:${preset}`, 24 * 60 * 60 * 1000, () => getJSON(`${base}/genesis-${preset}.json`)),
+  ]);
+
+  const roundDoc = roundRes.status === 'fulfilled' ? roundRes.value.data : null;
+  const reference = refRes.status === 'fulfilled' ? refRes.value.data : null;
+  const genesis = genRes.status === 'fulfilled' ? genRes.value.data : null;
+
+  const refGeo = reference?.geomean ?? benchGeomean(reference?.scores);
+  const genGeo = genesis?.geomean ?? benchGeomean(genesis?.scores);
+
+  const entries = (roundDoc?.entries ?? [])
+    .map((e) => {
+      const geomean = e.geomean ?? benchGeomean(e.scores);
+      // How far this model has travelled from the subnet's own starting point
+      // toward the official model. 100% means it has caught up.
+      const gapClosed =
+        geomean != null && refGeo != null && genGeo != null && genGeo !== refGeo
+          ? (genGeo - geomean) / (genGeo - refGeo)
+          : null;
+      return {
+        uid: e.miner_uid,
+        hotkey: e.miner_hotkey,
+        role: e.role,
+        scores: e.scores,
+        geomean,
+        gap_closed: gapClosed,
+        beats_reference: geomean != null && refGeo != null ? geomean < refGeo : null,
+      };
+    })
+    .sort((a, b) => (a.geomean ?? Infinity) - (b.geomean ?? Infinity));
+
+  return {
+    round_id: roundId,
+    preset,
+    created_block: roundDoc?.created_block ?? null,
+    reference: reference ? { source: reference.source, geomean: refGeo, scores: reference.scores } : null,
+    genesis: genesis ? { source: genesis.source, geomean: genGeo, scores: genesis.scores } : null,
+    entries,
+    best: entries[0] ?? null,
+    available: Boolean(roundDoc),
+  };
+}
+
+export const cascade = { roundIndex, latestRound, roundDetail, liveStatus, benchmarks };

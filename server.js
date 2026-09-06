@@ -57,6 +57,16 @@ app.get('/api/cascade/latest', wrap(() => cascade.latestRound()));
 app.get('/api/cascade/live', wrap(() => cascade.liveStatus()));
 app.get('/api/cascade/round/:roundId', wrap((req) => cascade.roundDetail(req.params.roundId)));
 
+// Public-benchmark comparison for a round. Defaults to the latest round and the
+// preset that round actually trained, since only some presets are published.
+app.get('/api/cascade/benchmarks', wrap(async (req) => {
+  const latest = await cascade.latestRound();
+  const roundId = req.query.round ?? latest.round?.round_id;
+  const preset = req.query.preset ?? latest.round?.sizes?.[0] ?? 'toto2-4m';
+  if (!roundId) return { available: false, entries: [] };
+  return cascade.benchmarks(roundId, preset);
+}));
+
 /**
  * Reward distribution by rank. The receipt says what share each uid was assigned;
  * the metagraph says what that share is actually paying out. Joining them turns a

@@ -598,6 +598,96 @@ const attempt = (url) =>
  * the chain calls are credit-metered and serialized — waiting for the slowest
  * one before drawing anything is what made the page look frozen.
  */
+/**
+ * Public-benchmark standing. The round's own scoring only says who beat the
+ * incumbent; these third-party suites (GIFT-Eval, BOOM, "time") say whether the
+ * model is good in absolute terms, against the official Datadog Toto-2 at the
+ * same size and against the subnet's own starting point.
+ */
+function renderBenchmarks(b) {
+  const el = document.getElementById('benchmarks');
+  if (!b?.available || !b.entries?.length) {
+    el.innerHTML = '';
+    return;
+  }
+  const ref = b.reference?.geomean ?? null;
+  const gen = b.genesis?.geomean ?? null;
+  const best = b.best;
+
+  // Position the three markers on a shared scale so the bar reads as distance travelled.
+  const lo = Math.min(ref ?? Infinity, best?.geomean ?? Infinity) * 0.97;
+  const hi = Math.max(gen ?? 0, best?.geomean ?? 0) * 1.01;
+  const pos = (v) => (v == null || hi === lo ? null : ((hi - v) / (hi - lo)) * 100);
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Public Benchmarks — chasing the official model</h2>
+        <span class="badge plain">${esc(b.preset)}</span>
+      </div>
+      <p class="panel-note">
+        Scored on third-party suites (GIFT-Eval, BOOM, time) rather than the round's own held-out
+        windows, so this is the absolute-quality question: is the subnet's model actually catching
+        <strong>Datadog's official Toto-2</strong>? Lower geomean is better.
+      </p>
+
+      <div class="stat-grid" style="margin-bottom:14px">
+        <div class="stat-tile"><div class="stat-label">Gap closed</div><div class="stat-value">${fmtPct(
+          best?.gap_closed,
+          1
+        )}</div><div class="stat-sub">from genesis toward official</div></div>
+        <div class="stat-tile"><div class="stat-label">Best subnet model</div><div class="stat-value">${fmtFixed(
+          best?.geomean,
+          4
+        )}</div><div class="stat-sub">uid ${esc(best?.uid)} · ${esc(best?.role)}</div></div>
+        <div class="stat-tile"><div class="stat-label">Official Toto-2</div><div class="stat-value">${fmtFixed(
+          ref,
+          4
+        )}</div><div class="stat-sub">${best?.beats_reference ? 'subnet ahead' : `behind by ${fmtFixed((best?.geomean ?? 0) - (ref ?? 0), 4)}`}</div></div>
+        <div class="stat-tile"><div class="stat-label">Genesis baseline</div><div class="stat-value">${fmtFixed(
+          gen,
+          4
+        )}</div><div class="stat-sub">where the subnet started</div></div>
+      </div>
+
+      <div class="meter" style="height:12px;position:relative">
+        <span class="meter-fill" style="width:${(best?.gap_closed ?? 0) * 100}%"></span>
+      </div>
+      <div class="meter-row">
+        <span>genesis ${fmtFixed(gen, 3)}</span>
+        <span class="num">best ${fmtFixed(best?.geomean, 4)}</span>
+        <span>official ${fmtFixed(ref, 3)}</span>
+      </div>
+
+      <div class="table-wrap scroll-cap" style="margin-top:14px">
+        <table class="data-table">
+          <thead><tr>
+            <th>UID</th><th>Role</th><th>Geomean</th><th>Gap closed</th>
+            <th>GIFT-Eval CRPS</th><th>BOOM CRPS</th><th>Time CRPS</th>
+          </tr></thead>
+          <tbody>
+            ${b.entries
+              .map(
+                (e) => `<tr class="stripe ${e.role === 'king' ? 'role-king' : ''}">
+                  <td><strong>${esc(e.uid)}</strong></td>
+                  <td>${e.role === 'king' ? '<span class="badge good">king</span>' : '<span class="badge plain">challenger</span>'}</td>
+                  <td class="num">${fmtFixed(e.geomean, 4)}</td>
+                  <td class="num">${fmtPct(e.gap_closed, 1)}</td>
+                  <td class="num">${fmtFixed(e.scores?.gifteval_crps, 4)}</td>
+                  <td class="num">${fmtFixed(e.scores?.boom_crps, 4)}</td>
+                  <td class="num">${fmtFixed(e.scores?.time_crps, 4)}</td>
+                </tr>`
+              )
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="dim tiny" style="margin-top:8px">
+        Reference: ${esc(b.reference?.source ?? '—')}
+      </div>
+    </div>`;
+}
+
 async function load() {
   const pLive = attempt('/api/cascade/live');
   const pLatest = attempt('/api/cascade/latest');
@@ -606,6 +696,7 @@ async function load() {
   const pSubnet = attempt('/api/subnet');
   const pMeta = attempt('/api/metagraph');
   const pEvents = attempt('/api/events');
+  const pBench = attempt('/api/cascade/benchmarks');
 
   const val = (r) => (r.ok ? r.value : null);
 
@@ -630,6 +721,7 @@ async function load() {
   Promise.all([pSubnet, pLive]).then(([sr, lr]) => renderChainHealth(val(sr)?.data ?? null, val(lr)));
   Promise.all([pMeta, pLatest]).then(([mr, lr]) => renderRankings(val(mr)?.data ?? [], val(lr)));
   pEvents.then((r) => renderActivity(val(r)?.events ?? []));
+  pBench.then((r) => renderBenchmarks(val(r)));
 
   // --- KPI row depends on nearly everything, so it lands last ---
   const [lr, lar, rr, rwr, sr, mr, er] = await Promise.all([
