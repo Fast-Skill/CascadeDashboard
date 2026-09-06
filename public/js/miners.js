@@ -30,18 +30,38 @@ let tableMeta = { refBlock: null, blockTimeS: 12, certified: null, receipts: nul
  * uid → what that miner actually submitted and how it scored. Joining on uid
  * is what turns two partial views into a miner leaderboard.
  */
-function buildRows(neurons, detail) {
+function buildRows(neurons, detail, live) {
   const heat = new Map((detail?.heat?.entrants ?? []).map((e) => [e.uid, e]));
   const finals = new Map((detail?.entries ?? []).map((e) => [e.miner_uid, e]));
-  const committed = new Map((detail?.participants ?? []).map((p) => [p.uid, p]));
   const weights = new Map((detail?.weights ?? []).map((w) => [w.uid, w.weight]));
   const summaries = new Map((detail?.entry_summaries ?? []).map((s) => [s.uid, s]));
 
-  return neurons.map((n) => {
-    const uid = n.uid;
+  // This round's on-chain commits (free, from status/chain.json) take priority
+  // over the previous round's participant list for who is competing *now*.
+  const committed = new Map(
+    [...(detail?.participants ?? []), ...(live?.committed_now ?? [])].map((p) => [p.uid, p])
+  );
+
+  // The roster is the union of every uid any free source knows about, enriched
+  // with chain state where available. Building it from the metagraph instead
+  // meant an exhausted Taostats balance emptied the whole table, even though the
+  // receipts and chain status still described hundreds of competing miners.
+  const byUid = new Map((neurons ?? []).map((n) => [n.uid, n]));
+  const uids = new Set([
+    ...byUid.keys(),
+    ...committed.keys(),
+    ...heat.keys(),
+    ...finals.keys(),
+    ...weights.keys(),
+  ]);
+
+  return [...uids].map((uid) => {
+    const n = byUid.get(uid) ?? {};
     const h = heat.get(uid);
     const f = finals.get(uid);
     return {
+      /** True when chain state was actually available for this uid. */
+      on_chain: byUid.has(uid),
       // Only the final-phase duel is scored inside the validators' signed
       // receipt. The heat block is explicitly excluded from the receipt's
       // canonical_body (DEC-CA-0011: unsigned, single-writer, presentational),
@@ -49,14 +69,14 @@ function buildRows(neurons, detail) {
       verified: f ? 'final' : h ? 'heat' : null,
       commit_block: committed.get(uid)?.commit_block ?? null,
       uid,
-      hotkey: n.hotkey?.ss58 ?? null,
+      hotkey: n.hotkey?.ss58 ?? f?.miner_hotkey ?? h?.hotkey ?? committed.get(uid)?.hotkey ?? null,
       coldkey: n.coldkey?.ss58 ?? null,
       active: n.active,
       validator: Boolean(n.validator_permit),
-      stake: n.total_alpha_stake,
+      stake: n.total_alpha_stake ?? null,
       incentive: Number(n.incentive ?? 0),
-      emission: n.emission,
-      daily_reward: n.daily_reward,
+      emission: n.emission ?? null,
+      daily_reward: n.daily_reward ?? null,
       trust: Number(n.trust ?? 0),
       updated: n.updated,
       immunity: n.is_immunity_period,
@@ -197,10 +217,12 @@ function render() {
 
 async function load() {
   try {
-    const [mgRes, latestRes] = await Promise.allSettled([
+    const [mgRes, latestRes, liveRes] = await Promise.allSettled([
       fetchJSON('/api/metagraph'),
       fetchJSON('/api/cascade/latest'),
+      fetchJSON('/api/cascade/live'),
     ]);
+    const live = liveRes.status === 'fulfilled' ? liveRes.value : null;
 
     const stale = [];
     const missing = [];
@@ -225,12 +247,12 @@ async function load() {
       missing.push('rounds');
     }
 
-    rows = buildRows(neurons, detail);
+    rows = buildRows(neurons, detail, live);
 
     // Prefer the metagraph's own block height (freshest, already fetched) over
     // the receipt index snapshot, which lags by however long ago it published.
     tableMeta = {
-      refBlock: neurons[0]?.block_number ?? latestRes.value?.chain?.current_block ?? null,
+      refBlock: live?.chain?.current_block ?? neurons[0]?.block_number ?? latestRes.value?.chain?.current_block ?? null,
       blockTimeS: latestRes.value?.chain?.block_time_s ?? 12,
       certified: round?.n_scored ?? null,
       receipts: round?.n_receipts ?? null,
@@ -241,12 +263,12 @@ async function load() {
 
     document.getElementById('summary').innerHTML = `
       <div class="stat-grid">
-        <div class="stat-tile"><div class="stat-label">Registered</div><div class="stat-value">${fmtNum(
+        <div class="stat-tile"><div class="stat-label">Miners listed</div><div class="stat-value">${fmtNum(
           rows.length
-        )}</div><div class="stat-sub">neurons on SN91</div></div>
+        )}</div><div class="stat-sub">${fmtNum(rows.filter((r) => r.on_chain).length)} with chain state</div></div>
         <div class="stat-tile"><div class="stat-label">Committed</div><div class="stat-value">${fmtNum(
-          detail?.participants?.length
-        )}</div><div class="stat-sub">generators last round</div></div>
+          live?.committed_now_count ?? detail?.participants?.length
+        )}</div><div class="stat-sub">generators this round</div></div>
         <div class="stat-tile"><div class="stat-label">In the heat</div><div class="stat-value">${fmtNum(
           competing
         )}</div><div class="stat-sub">screened last round</div></div>
