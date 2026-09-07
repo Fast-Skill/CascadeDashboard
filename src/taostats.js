@@ -27,23 +27,49 @@ const TTL = {
   events: Number(process.env.TTL_EVENTS_MS ?? 60 * 60_000),
 };
 
-// 5 calls/minute means one call per 12s; the old 2.5s gap paced at 24/min and
-// tripped the per-minute limit on a single cold page load.
-const MIN_REQUEST_GAP_MS = Number(process.env.TAOSTATS_MIN_GAP_MS ?? 12_000);
+/**
+ * "5 calls per minute" is a token bucket, not a mandatory 12s spacing — five
+ * calls back to back are within the limit, and only the sixth has to wait.
+ * Modelling it as a fixed gap made a cold page load take 48s to warm five
+ * endpoints that the allowance permits immediately; the bucket refills at the
+ * same sustained rate, so the budget is unchanged.
+ */
+const RATE_CAPACITY = Number(process.env.TAOSTATS_RATE_CAPACITY ?? 5);
+const RATE_WINDOW_MS = Number(process.env.TAOSTATS_RATE_WINDOW_MS ?? 60_000);
+const REFILL_MS = RATE_WINDOW_MS / RATE_CAPACITY;
+
+let tokens = RATE_CAPACITY;
+let lastRefill = Date.now();
 let queueTail = Promise.resolve();
-let lastRequestAt = 0;
+
+function takeToken() {
+  const now = Date.now();
+  const gained = Math.floor((now - lastRefill) / REFILL_MS);
+  if (gained > 0) {
+    tokens = Math.min(RATE_CAPACITY, tokens + gained);
+    lastRefill += gained * REFILL_MS;
+  }
+  if (tokens >= 1) {
+    tokens -= 1;
+    return 0;
+  }
+  return Math.max(0, lastRefill + REFILL_MS - now);
+}
 
 function schedule(task) {
   const run = queueTail.then(async () => {
     // Re-check on reaching the front of the queue, not just on entering it. A
     // page fires ~5 calls at once, so they all queue before the first failure
-    // registers; without this they would each still sit out a full gap for a
+    // registers; without this they would each still sit out a full wait for a
     // request that is now guaranteed to fail.
     if (Date.now() < creditsExhaustedUntil) throw new OutOfCreditsError(creditsDetail);
 
-    const wait = Math.max(0, lastRequestAt + MIN_REQUEST_GAP_MS - Date.now());
-    if (wait > 0) await sleep(wait);
-    lastRequestAt = Date.now();
+    for (;;) {
+      const wait = takeToken();
+      if (wait === 0) break;
+      await sleep(wait);
+      if (Date.now() < creditsExhaustedUntil) throw new OutOfCreditsError(creditsDetail);
+    }
     return task();
   });
   queueTail = run.then(
