@@ -97,6 +97,39 @@ const CREDIT_COOLDOWN_MS = 5 * 60 * 1000;
 let creditsExhaustedUntil = 0;
 let creditsDetail = '';
 
+/**
+ * Remaining credit balance, rate limit and billing window for the key.
+ *
+ * Lives on Taostats' management API rather than the data API, and polling it is
+ * free — three checks in a row never moved the counter. It is NOT real-time
+ * though: three confirmed data calls also left `creditRemaining` unchanged, so
+ * treat it as a lagging early-warning gauge, not a live meter. Worth having
+ * regardless: an empty balance is what silently broke every chain panel before.
+ */
+const MANAGEMENT_API = 'https://management-api.taostats.io/api/v1/key/validate';
+
+async function keyStatus() {
+  if (!API_KEY) return null;
+  try {
+    const r = await cached('key:status', 5 * 60_000, async () => {
+      const res = await fetch(`${MANAGEMENT_API}?apiKeyId=${encodeURIComponent(API_KEY)}`);
+      if (!res.ok) throw new Error(`key/validate ${res.status}`);
+      return res.json();
+    });
+    const d = r.data;
+    return {
+      credit_remaining: d.creditRemaining ?? null,
+      rate_limit: d.rateLimit ?? null,
+      period_start: d.startDate ?? null,
+      period_end: d.endDate ?? null,
+      plan: d.endpointAccess?.pro ? 'pro' : d.endpointAccess?.standard ? 'standard' : 'free',
+      lagging: true,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function creditStatus() {
   const blocked = Date.now() < creditsExhaustedUntil;
   return { blocked, detail: blocked ? creditsDetail : null, retryAt: blocked ? creditsExhaustedUntil : null };
@@ -267,4 +300,5 @@ export const taostats = {
   metagraph,
   events,
   alphaPrice,
+  keyStatus,
 };

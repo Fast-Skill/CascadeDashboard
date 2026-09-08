@@ -42,9 +42,12 @@ function wrap(handler) {
   };
 }
 
-app.get('/api/config', (req, res) => {
-  res.json({ netuid: NETUID, apiKeyConfigured: taostats.hasKey(), credits: creditStatus() });
-});
+app.get('/api/config', wrap(async () => ({
+  netuid: NETUID,
+  apiKeyConfigured: taostats.hasKey(),
+  credits: creditStatus(),
+  key: await taostats.keyStatus(),
+})));
 
 // --- chain data (Taostats) ---
 app.get('/api/subnet', wrap(() => taostats.subnet()));

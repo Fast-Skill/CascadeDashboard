@@ -339,7 +339,12 @@ async function refreshTopbarStats() {
   if (!pillsEl && !footEl) return;
 
   try {
-    const [liveRes, subnetRes] = await Promise.allSettled([fetchJSON('/api/cascade/live'), fetchJSON('/api/subnet')]);
+    const [liveRes, subnetRes, cfgRes] = await Promise.allSettled([
+      fetchJSON('/api/cascade/live'),
+      fetchJSON('/api/subnet'),
+      fetchJSON('/api/config'),
+    ]);
+    const cfg = cfgRes.status === 'fulfilled' ? cfgRes.value : null;
     const live = liveRes.status === 'fulfilled' ? liveRes.value : null;
     const subnet = subnetRes.status === 'fulfilled' ? subnetRes.value.data : null;
     // Block height comes from the subnet's own free status doc; falling back to
@@ -377,11 +382,30 @@ async function refreshTopbarStats() {
         <div class="sidebar-kv"><span>Netuid</span><b>#${esc(subnet?.netuid ?? 91)}</b></div>
         <div class="sidebar-kv"><span>Miners</span><b>${fmtNum(subnet?.active_miners)}</b></div>
         <div class="sidebar-kv"><span>Validators</span><b>${fmtNum(subnet?.active_validators)}</b></div>
-        <div class="sidebar-kv"><span>Round stage</span><b>${esc(stageLabel)}</b></div>`;
+        <div class="sidebar-kv"><span>Round stage</span><b>${esc(stageLabel)}</b></div>
+        ${creditRow(cfg?.key)}`;
     }
   } catch {
     /* chrome stats are context, not content */
   }
+}
+
+/**
+ * Remaining Taostats credits. The balance lags real usage by a minute or two,
+ * so it is an early-warning gauge rather than a live meter — but an empty
+ * balance is what silently killed every chain panel before, so it earns a spot.
+ */
+function creditRow(key) {
+  if (!key || key.credit_remaining == null) return '';
+  const left = key.credit_remaining;
+  const low = left < 1000;
+  const resets = key.period_end ? new Date(key.period_end).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : null;
+  const color = low ? 'var(--critical)' : 'var(--ink-2)';
+  return `<div class="sidebar-kv" title="Taostats ${esc(key.plan)} tier · ${esc(
+    key.rate_limit
+  )}/min · resets ${esc(resets ?? '')} · balance lags usage slightly">
+    <span>API credits</span><b style="color:${color}">${fmtNum(left)}${resets ? ` · ${esc(resets)}` : ''}</b>
+  </div>`;
 }
 
 function tickClock() {
