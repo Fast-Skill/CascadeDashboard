@@ -30,7 +30,7 @@ let tableMeta = { refBlock: null, blockTimeS: 12, certified: null, receipts: nul
  * uid → what that miner actually submitted and how it scored. Joining on uid
  * is what turns two partial views into a miner leaderboard.
  */
-function buildRows(neurons, detail, live) {
+function buildRows(neurons, detail, live, currentKingUid = null) {
   // A receipt does not always carry a heat block — a round can be scored (or
   // rejected) with the manifest's presentational heat section absent entirely.
   // The trainer's live mirror publishes those standings separately, which is the
@@ -76,6 +76,9 @@ function buildRows(neurons, detail, live) {
     return {
       /** True when chain state was actually available for this uid. */
       on_chain: byUid.has(uid),
+      /** Holder of the crown right now, which after a dethrone is NOT the
+       *  entrant the receipt labels `king` (that is who defended and lost). */
+      is_king: currentKingUid != null && uid === currentKingUid,
       // Only the final-phase duel is scored inside the validators' signed
       // receipt. The heat block is explicitly excluded from the receipt's
       // canonical_body (DEC-CA-0011: unsigned, single-writer, presentational),
@@ -165,7 +168,9 @@ function heatNote(heat) {
 }
 
 function stage(r) {
-  if (r.role === 'king') return '<span class="badge good">king</span>';
+  if (r.is_king) return '<span class="badge good">king</span>';
+  // Held the crown entering the round but lost it — no longer the king.
+  if (r.role === 'king') return '<span class="badge plain">prev king</span>';
   if (r.role === 'challenger') return '<span class="badge"><span class="dot" style="background:var(--series-2)"></span>finalist</span>';
   if (r.advanced) return '<span class="badge plain">advanced</span>';
   // A duel-only round seats entrants in reveal order instead of screening them,
@@ -195,7 +200,7 @@ function render() {
   // nor incentive alone orders this table usefully. "Round" walks the pipeline:
   // king, finalists, heat by rank, then everyone else by what they earn.
   const roundRank = (r) => {
-    if (r.role === 'king') return [0, 0];
+    if (r.is_king) return [0, 0];
     if (r.role === 'challenger') return [1, r.heat_rank ?? 0];
     if (r.heat_rank != null) return [2, r.heat_rank];
     if (r.committed) return [3, -r.incentive];
@@ -224,7 +229,7 @@ function render() {
   document.getElementById('lbBody').innerHTML = list.length
     ? list
         .map(
-          (r) => `<tr class="${r.role === 'king' ? 'is-king' : ''}">
+          (r) => `<tr class="${r.is_king ? 'is-king' : ''}">
             <td><strong>${r.uid}</strong></td>
             <td class="mono" title="${esc(r.hotkey ?? '')}">${esc(shortAddr(r.hotkey))}</td>
             <td>${stage(r)}</td>
@@ -293,7 +298,7 @@ async function load() {
       missing.push('rounds');
     }
 
-    rows = buildRows(neurons, detail, live);
+    rows = buildRows(neurons, detail, live, round?.post_round_king_uid ?? round?.king_uid ?? null);
 
     // Prefer the metagraph's own block height (freshest, already fetched) over
     // the receipt index snapshot, which lags by however long ago it published.

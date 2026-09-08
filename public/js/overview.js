@@ -135,11 +135,12 @@ function renderKpis({ live, latest, rewards, subnet, metagraph, roundsHist }) {
       trendHtml: `<span class="kpi-trend flat">${fmtNum(metagraph?.length)} keys</span>`,
     }),
     kpiCard({
-      label: 'Reign Length',
-      value: fmtNum(reign?.rounds),
-      unit: 'rounds',
+      label: 'Reigning King',
+      value: reign?.uid != null ? `uid ${esc(reign.uid)}` : '—',
       spark: sparkline(reignSeries, { color: 'var(--series-2)' }),
-      trendHtml: trendLabel(reignTrend),
+      trendHtml: `<span class="kpi-trend flat">${fmtNum(reign?.rounds)} round${
+        reign?.rounds === 1 ? '' : 's'
+      } held</span>`,
     }),
     kpiCard({
       label: 'Validator Certification',
@@ -164,7 +165,10 @@ function renderKpis({ live, latest, rewards, subnet, metagraph, roundsHist }) {
 
 function renderRankings(metagraph, latest) {
   const round = latest?.round;
-  const kingUid = round?.king_uid;
+  // `king_uid` is who held the crown ENTERING the round; after a dethrone the
+  // current king is the challenger who won. Use the post-round holder, falling
+  // back only when the round was not scored.
+  const kingUid = round?.post_round_king_uid ?? round?.king_uid;
   const chalUid = round?.chal_uid;
 
   const ranked = [...(metagraph ?? [])]
