@@ -31,7 +31,21 @@ let tableMeta = { refBlock: null, blockTimeS: 12, certified: null, receipts: nul
  * is what turns two partial views into a miner leaderboard.
  */
 function buildRows(neurons, detail, live) {
-  const heat = new Map((detail?.heat?.entrants ?? []).map((e) => [e.uid, e]));
+  // A receipt does not always carry a heat block — a round can be scored (or
+  // rejected) with the manifest's presentational heat section absent entirely.
+  // The trainer's live mirror publishes those standings separately, which is the
+  // whole reason it exists, so fall back to it. Guarded on epoch: the mirror
+  // tracks the round in flight, which is not always the round shown here, and
+  // showing another round's ranking as this one's is the exact failure the
+  // subnet's own design note warns about.
+  const receiptEntrants = detail?.heat?.entrants ?? [];
+  const mirrorUsable =
+    receiptEntrants.length === 0 &&
+    live?.heat?.entrants?.length &&
+    live.heat.epoch_start_block === detail?.epoch_start_block;
+  const entrants = mirrorUsable ? live.heat.entrants : receiptEntrants;
+
+  const heat = new Map(entrants.map((e) => [e.uid, e]));
   const finals = new Map((detail?.entries ?? []).map((e) => [e.miner_uid, e]));
   const weights = new Map((detail?.weights ?? []).map((w) => [w.uid, w.weight]));
   const summaries = new Map((detail?.entry_summaries ?? []).map((s) => [s.uid, s]));
@@ -89,6 +103,7 @@ function buildRows(neurons, detail, live) {
       heat_mase: h?.mase ?? null,
       p_best: h?.p_best ?? null,
       advanced: h?.status === 'advanced',
+      heat_status: h?.status ?? null,
       committed: committed.has(uid),
       weight: weights.get(uid) ?? 0,
       mase_mean: summaries.get(uid)?.mase_mean ?? null,
@@ -122,10 +137,41 @@ function submittedCell(r, refBlock, blockTimeS) {
   return `<span class="num">${fmtNum(r.commit_block)}</span>${ago}`;
 }
 
+/**
+ * Explains an empty CRPS/MASE/p(best) column. On a duel-only round the subnet
+ * seats entrants in reveal order and never runs a screen, so those scores are
+ * not merely missing — they are never produced. Saying so beats a row of dashes
+ * that reads like a broken table.
+ */
+function heatNote(heat) {
+  if (!heat) return '';
+  const scored = (heat.entrants ?? []).filter((e) => e.crps != null).length;
+  const total = (heat.entrants ?? []).length;
+  if (heat.no_screen || (total > 0 && scored === 0)) {
+    const reason = heat.no_screen_reason || 'this round seats entrants in reveal order rather than screening them';
+    return `<div class="notice"><span>&#9432;</span><div>
+      <strong>No heat scores this round.</strong> ${esc(reason)} —
+      so <strong>CRPS</strong>, <strong>MASE</strong> and <strong>p(best)</strong> are not produced and stay blank.
+      Stage still shows each entrant's standing (seated / waiting).
+    </div></div>`;
+  }
+  if (total > 0 && scored < total) {
+    return `<div class="notice"><span>&#9432;</span><div>
+      Heat in progress — ${fmtNum(scored)} of ${fmtNum(total)} entrants scored so far.
+      Blank score columns fill in as the screen completes.
+    </div></div>`;
+  }
+  return '';
+}
+
 function stage(r) {
   if (r.role === 'king') return '<span class="badge good">king</span>';
   if (r.role === 'challenger') return '<span class="badge"><span class="dot" style="background:var(--series-2)"></span>finalist</span>';
   if (r.advanced) return '<span class="badge plain">advanced</span>';
+  // A duel-only round seats entrants in reveal order instead of screening them,
+  // so they carry a status but never a CRPS/MASE score.
+  if (r.heat_status === 'seated') return `<span class="badge accent">seated #${r.heat_rank ?? '—'}</span>`;
+  if (r.heat_status === 'waiting') return '<span class="badge plain">waiting</span>';
   if (r.heat_rank != null) return `<span class="badge plain">heat #${r.heat_rank}</span>`;
   if (r.committed) return '<span class="dim tiny">committed</span>';
   return '<span class="dim tiny">—</span>';
@@ -252,6 +298,7 @@ async function load() {
     // Prefer the metagraph's own block height (freshest, already fetched) over
     // the receipt index snapshot, which lags by however long ago it published.
     tableMeta = {
+      heat: live?.heat ?? null,
       refBlock: live?.chain?.current_block ?? neurons[0]?.block_number ?? latestRes.value?.chain?.current_block ?? null,
       blockTimeS: latestRes.value?.chain?.block_time_s ?? 12,
       certified: round?.n_scored ?? null,
@@ -315,6 +362,7 @@ async function load() {
           <strong>Verified</strong> separates scores validators actually certified in a signed receipt from
           heat-screen values, which the trainer publishes unsigned and no validator attests to.
         </p>
+        ${heatNote(live?.heat)}
         <div class="table-wrap scroll-cap">
           <table class="data-table">
             <thead><tr>
